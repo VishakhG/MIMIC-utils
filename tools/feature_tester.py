@@ -1,6 +1,5 @@
 from __future__ import division
 
-
 import numpy as np
 import pandas as pd
 
@@ -43,7 +42,7 @@ from sklearn.metrics.pairwise  import euclidean_distances
 from os.path import join as pjoin 
 
 class FeatureTester(object) :
-    def __init__(self, fname = "", verbose=False):
+    def __init__(self, fname = "", outDir=None,  verbose=False):
         self.features = None
         self.targets = None
         self.x_train = None
@@ -55,6 +54,9 @@ class FeatureTester(object) :
         self.fname = fname
         self.cv_score_func = None
         self.verbose = verbose
+        if outDir is None:
+            outDir = "/data/ml2/vishakh/temp/feature-testing"
+        self.outDir = outDir
         
     def load_from_array(self, feature_set, target_set):
         self.features = feature_set
@@ -194,7 +196,7 @@ class FeatureTester(object) :
         score = min(Se, P)
         return score
         
-    def test_classifier(self, classifier_i, params_i = None, name=None):
+    def test_classifier(self, classifier_i, params_i = None, name=None, save=False):
 
         x_test = self.x_test
         y_test = self.y_test
@@ -245,7 +247,7 @@ class FeatureTester(object) :
                               [Macc_train, Macc_test]]
         
 
-
+        
         result_out =  {'name' : name,
                 'classifier': str(clf.best_params_),
                 'cv_score':top_score,
@@ -269,6 +271,13 @@ class FeatureTester(object) :
         }
 
         self.check_record(result_out)
+
+        if save:
+            fpath = pjoin(self.outDir, str(name) + str(clf.best_params_) + str(roc[1]))
+            print "Saving learning data to {0}".format(fpath)
+            f = gzip.open(fpath, 'wb')
+            pickle.dump(clf.cv_results_, f)
+            f.close()
         return result_out
 
     def check_record(self, stats):
@@ -276,7 +285,7 @@ class FeatureTester(object) :
         self.current_result = stats
 
 
-    def logistic_regression(self, elided_search = False):
+    def logistic_regression(self, elided_search = False, save_lc=False):
         lr = LogisticRegression()
 
         if elided_search:
@@ -285,7 +294,7 @@ class FeatureTester(object) :
         else:
             lr_params = {'penalty':['l1', 'l2'], 'C': [0.001, 0.01, 0.1, 1, 10, 100, 1000]}
 
-        log_stats = self.test_classifier(lr, lr_params, name = str(lr)[0:18])
+        log_stats = self.test_classifier(lr, lr_params, name = str(lr)[0:18], save=save_lc)
         
     def random_forest(self):
         rf = RandomForestClassifier()
@@ -346,35 +355,40 @@ class FeatureTester(object) :
         return self.current_result
 
     def knn_custom(self, maxk=200, cosineSim=False):
+        #We want to use a validation set 
         split = self.prepare_valid_set()
         
         X_train = split['x_train']
         X_valid = split['x_valid']
-        X_test = split['x_test']
+        X_test = self.x_test
         
         y_train = split['y_train']
         y_valid = split['y_valid']
-        y_test = split['y_test']
+        y_test = self.y_test
 
         
         maxk = min(maxk, X_train.shape[0])  # K can't be > numcases in X_train
         
-        numqueries = X_test.shape[0]
+        numqueries_valid = X_valid.shape[0]
+        numqueries_test = X_test.shape[0]
         numqueries_train = X_train.shape[0]
 
-        numqueriesMaj = X_test[y_test == 0].shape[0]
-
+        numqueriesMaj_test = X_test[y_test == 0].shape[0]
+        numqueriesMaj_valid = X_valid[y_test == 0].shape[0]
         numqueriesMaj_train = X_train[y_train == 0].shape[0]
 
         if not cosineSim:
-            s =  euclidean_distances(X_test, X_train)
+            s_test =  euclidean_distances(X_test, X_train)
+            s_valid = euclidean_distances(X_valid, X_train)
             s_train =  euclidean_distances(X_train, X_train)
             
         else:
-            s = cosine_similarity(X_test, precomp.T)
+            s_test = cosine_similarity(X_test, X_train)
+            s_valid = cosine_similarity(X_valid, X_train)
             s_train = cosine_similarity(X_train, X_train)
         
-        ind = np.argsort(s, axis=1)
+        ind_test = np.argsort(s_test, axis=1)
+        ind_valid = np.argsort(s_valid, axis=1)
         ind_train = np.argsort(s_train, axis=1)
 
         # Voting based on nearest neighbours
@@ -384,96 +398,115 @@ class FeatureTester(object) :
         # With this, we won't have to check
 
         if y_train.dtype.kind != 'int':
-            queryvotes = y_train[ind[:, :maxk]].astype('int')
+            queryvotes_test = y_train[ind_test[:, :maxk]].astype('int')
+            queryvotes_valid = y_train[ind_valid[:, :maxk]].astype('int')
             queryvotes_train = y_train[ind_train[:, :maxk]].astype('int')
 
         else:
-            queryvotes = y_train[ind[:, :maxk]]
+            queryvotes = y_train[ind_valid[:, :maxk]]
+            queryvotes_valid = y_train[ind_valid[:, :maxk]]
             queryvotes_train = y_train[ind_train[:, :maxk]]
 
-        errsum = np.empty((maxk,))
+        errsum_valid = np.empty((maxk,))
         errsum_train = np.empty((maxk, ))
 
-        
-        errsumMaj = np.empty((maxk, ))
         errsumMaj_train = np.empty((maxk, ))
+        errsumMaj_valid = np.empty((maxk, ))
 
-        errsumMin = np.empty((maxk, ))
-        errsumMin_train = np.empty((maxk, ))
-
-        aucs = []
+        aucs_valid = []
         aucs_train = []
 
-        phys_scores = []
+        phys_scores_valid = []
         phys_scores_train = []
 
         for kk in xrange(maxk):
-            labels = np.empty((numqueries,), dtype='int')
+            labels = np.empty((numqueries_valid,), dtype='int')
             labels_train = np.empty((numqueries_train, ), dtype='int')
             
-            for i in xrange(numqueries):
-                b = np.bincount(queryvotes[i, :kk + 1])
+            for i in xrange(numqueries_valid):
+                b = np.bincount(queryvotes_valid[i, :kk + 1])
                 labels[i] = np.argmax(b)  # get winning class
 
             for i in xrange(numqueries_train):
                 b = np.bincount(queryvotes_train[i, :kk + 1])
                 labels_train[i] = np.argmax(b)
                 
-            errors = labels != y_test
+            errors = labels != y_valid
             errors_train = labels_train != y_train
             
-            errorsMaj = errors[y_test == 0]
+            errorsMaj = errors[y_valid == 0]
             errorsMaj_train = errors_train[y_train == 0]
 
-            phys_scores.append(self.physionet_score(y_test, labels))
+            phys_scores_valid.append(self.physionet_score(y_valid, labels))
             phys_scores_train.append(self.physionet_score(y_train, labels_train))
 
             try:
-                auc = roc_auc_score(y_test, labels)
+                auc = roc_auc_score(y_valid, labels)
                 auc_train = roc_auc_score(y_train, labels_train)
-                aucs.append(auc)
-                aucs_train.append(auc_train)
+                aucs_valid.append(auc)
+                aucs_valid.append(auc_train)
 
             except:
                 aucs.append(None)
 
-            errsum[kk] = sum(errors)
+            errsum_valid[kk] = sum(errors)
             errsum_train[kk] = sum(errors_train)
             
-            errsumMaj[kk] = sum(errorsMaj)
+            errsumMaj_valid[kk] = sum(errorsMaj)
             errsumMaj_train[kk] = sum(errorsMaj_train)
 
-            errrate = errsum / numqueries
+            errrate_valid = errsum_valid / numqueries_valid
             errrate_train = errsum_train / numqueries_train
             
-            errrateMaj = errsumMaj / numqueriesMaj
+            errrateMaj_valid  = errsumMaj_valid / numqueriesMaj_valid
             errrateMaj_train = errsumMaj_train / numqueriesMaj_train
 
-            
-        result_out =  {
-            'name' : "knn_custom",
-            'accuracy:':{
-                "train": [1 - min(errrate_train), np.argmin(errrate_train)+1],
-                "test": [ 1- min(errrate), np.argmin(errrate)+1]
-            },
-            
-            'auc_roc:': {
-                "train":[max(aucs_train), np.argmax(aucs_train)+1],
-                "test":[max(aucs), np.argmax(aucs)+1]
-            },
-            
-            'majority_accuracy:':{
-                "train": [1 - min(errrateMaj_train), np.argmin(errrateMaj_train)+1],
-                "test": [ 1 - min(errrateMaj), np.argmin(errrateMaj)+1]
-            },
-            
-            'physionet score':{
-                "train" : [max(phys_scores_train), np.argmax(phys_scores_train)+1],
-                "test" : [max(phys_scores), np.argmax(phys_scores)+1]
-            }
-        }       
+        #try on test set
+        opt_k = np.argmin(aucs_valid)
 
-        return result_out
+        labels = np.empty((numqueries_test,), dtype='int')
+        labels_train = np.empty((numqueries_train))
+
+        for i in xrange(numqueries_test):
+            b = np.bincount(queryvotes_test[i, :kk + 1])
+            labels[i] = np.argmax(b)  # get winning class
+
+        for i in xrange(numqueries_train):
+            b = np.bincount(queryvotes_train[i, :kk + 1])
+            labels_train[i] = np.argmax(b)
+
+        errors = labels != y_test
+        errorsMaj = errors[y_test == 0]
+        phys_score_test = self.physionet_score(y_test, labels)
+
+        try:
+            auc_test = roc_auc_score(y_test, labels)
+        except:
+            auc_test = None
+
+        errsum_test = sum(errors)
+        errsumMaj_test = sum(errorsMaj)
+        
+
+        errrate_test = errsum_test / numqueries_test
+        errrateMaj_test  = errsumMaj_test / numqueriesMaj_test
+
+        train_out = {"Misclassification error": errrate_train, "Majority missclassification error": errrateMaj_train, "AUC":auc_train, "physionet_score":phys_scores_train} 
+        valid_out = {"Misclassification error": errrate_valid, "Majority missclassification error": errrateMaj_valid, "AUC":aucs_valid, "physionet_score":phys_scores_valid} 
+
+
+        results = {
+            "train" : train_out,
+            "validation":valid_out,
+            "physionet_score_test":phys_score_test,
+            "Optimal K" : opt_k,
+            "Missclassification error in test": 1-errrate_test,
+            "Majority missclassification error in test": 1-errrateMaj_test,
+            "Physionet_score in test": phys_score_test,
+            "Auc in test": auc_test
+        }
+        
+        return results
                       
       
     
