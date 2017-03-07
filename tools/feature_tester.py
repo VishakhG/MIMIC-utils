@@ -1,5 +1,11 @@
 from __future__ import division
 
+import cPickle as pickle
+from pprint import pprint
+import gzip
+import datetime
+from os.path import join as pjoin 
+
 import numpy as np
 import pandas as pd
 
@@ -8,40 +14,29 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.neighbors import KNeighborsClassifier 
 from metric_learn  import LMNN
 from metric_learn import NCA
-from oasis import Oasis
-
-from sklearn.model_selection import GridSearchCV
-from sklearn.metrics import confusion_matrix
-import os
-from sklearn.metrics import accuracy_score, roc_auc_score
-from sklearn.model_selection import cross_val_score
-import cPickle as pickle
-from sklearn.model_selection import learning_curve
-from pprint import pprint 
-from sklearn.feature_extraction.text import TfidfTransformer
-from sklearn.datasets import make_classification
-
-from sklearn.metrics import confusion_matrix
-from imblearn.over_sampling import RandomOverSampler
-
-from scipy.sparse import csr_matrix
-
-from sklearn.model_selection import train_test_split
-import gzip
-
-import datetime
-
-from pprint import pprint
-
-import scipy 
-import scipy.sparse
-
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.metrics.pairwise  import euclidean_distances
 
-from os.path import join as pjoin 
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import accuracy_score, roc_auc_score
+from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import learning_curve
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfTransformer
+
+from oasis import Oasis
+
+from imblearn.over_sampling import RandomOverSampler
+
+
+import scipy 
+import scipy.sparse
+from scipy.sparse import csr_matrix
 
 class FeatureTester(object) :
+    """A class that allows the testing of features with basic classifiers """
+    
     def __init__(self, fname = "", outDir=None,  verbose=False):
         self.features = None
         self.targets = None
@@ -55,24 +50,41 @@ class FeatureTester(object) :
         self.cv_score_func = None
         self.verbose = verbose
         if outDir is None:
-            outDir = "/data/ml2/vishakh/temp/feature-testing"
+            outDir = "/data/ml2/vishakh/patient-similarity/"
         self.outDir = outDir
         
     def load_from_array(self, feature_set, target_set):
+        """Set features and targets from numpy arrays"""
+        
         self.features = feature_set
         self.targets = target_set.ravel()
         print "loaded data"
         
-    def load_from_csv(self, feature_path=None, target_path=None, nrows=None):
+    def load_from_csv(self, feature_path=None, target_path=None, nrows=None, ncols=None):
+        """Load features and targests from csv files """
+
+        if nrows is not None:
+            print("Using {0} rows").format(nrows)
+            
         if feature_path is None:
-            feature_path = "/data/ml2/vishakh/mimic-out-umls/feature_mat_first48.csv"
+            feature_path = pjoin("/data/ml2/vishakh/patient-similarity",
+                                 "mimic-derived", "features48.csv")
+            print("Using default features {0}").format(feature_path)
+            
         if target_path is  None:
-            target_path = "/data/ml2/vishakh/mimic-out-umls/target_mat_first48.csv"
+            target_path = pjoin("/data/ml2/vishakh/patient-similarity",
+                                "mimic-derived", "targets48.csv")
+            
+            print("Using default targets {0}").format(target_path)
 
 
         features = np.array(pd.read_csv(feature_path, nrows = nrows)).astype('float')
         targets = np.array(pd.read_csv(target_path, nrows=nrows)).ravel()
 
+        if ncols is not None:
+            print("Using {0} columns").format(ncols)
+            features = features[:, 1:ncols]
+                        
         self.features = features
         self.targets = targets
 
@@ -80,6 +92,7 @@ class FeatureTester(object) :
         print "target dimension " + str(targets.shape)
         
     def create_intermediate_datasets(self, featurePathBase, targetsPathBase):
+        """Create intermediate datasets that make things faster """
         self.load_from_csv(featurePathBase + ".csv", targetsPathBase + ".csv")
 
         features = self.features
@@ -114,6 +127,7 @@ class FeatureTester(object) :
         pd.DataFrame(targets).to_csv(tBT_path + ".csv")
         
     def load_from_pk(self, feature_path, target_path):
+        """Load data from pickle files """
         features = pickle.load(open(feature_path))
         targets = pickle.load(open(target_path))
 
@@ -123,7 +137,9 @@ class FeatureTester(object) :
         print "feature dimension " + features.shape
         print "target dimension" + target.shape
 
-    def prepare_for_testing(self, tfidf=True, balance=True, sparse=True, cv_score_func=None, validation=False): 
+    def prepare_for_testing(self, tfidf=True, balance=True, sparse=True, cv_score_func=None, validation=False):
+        """ Get everything ready for testing, balance training set, create test train split and use  
+            TFIDF if needed. """
         if cv_score_func is None:
             self.cv_score_func = 'roc_auc'
         else :
@@ -179,6 +195,9 @@ class FeatureTester(object) :
         print  metadata
 
     def prepare_valid_set(self):
+        """Sometimes it may be easier to use a validation set instead of cross validation for 
+          Effeciency reasons, in these cases use this function to prepare that validation set.
+        """
         x_train, x_valid, y_train, y_valid  = train_test_split(
             self.x_train, self.y_train, train_size = .7, stratify=self.y_train)
 
@@ -190,6 +209,7 @@ class FeatureTester(object) :
         }
         
     def physionet_score(self, y_true, y_pred):
+        """The score that was used to score physionet 2012 challenge A """
         tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
         Se = tp/(tp + fn)
         P = tp/(tp + fp)
@@ -197,6 +217,7 @@ class FeatureTester(object) :
         return score
         
     def test_classifier(self, classifier_i, params_i = None, name=None, save=False):
+        """The general setup to test a classifier using grid search and k-fold CV for a sklearn classifier """
 
         x_test = self.x_test
         y_test = self.y_test
@@ -276,7 +297,8 @@ class FeatureTester(object) :
             fpath = pjoin(self.outDir, str(name) + str(clf.best_params_) + str(roc[1]))
             print "Saving learning data to {0}".format(fpath)
             f = gzip.open(fpath, 'wb')
-            pickle.dump(clf.cv_results_, f)
+            #Some model information that could be useful.
+            pickle.dump([clf.cv_results_, clf], f)
             f.close()
         return result_out
 
@@ -296,15 +318,21 @@ class FeatureTester(object) :
 
         log_stats = self.test_classifier(lr, lr_params, name = str(lr)[0:18], save=save_lc)
         
-    def random_forest(self):
+    def random_forest(self, save_lc = False):
         rf = RandomForestClassifier()
-        rf_params = {'criterion':('gini', 'entropy'), 'n_estimators':[10^i for i in range(3)]}    
-        rf_stats = self.test_classifier(rf, rf_params, name="rf")
+        rf_params = {
+            'criterion':['gini', 'entropy'],
+            'n_estimators':[10**i for i in range(4)] + [2000, 3000, 4000],
+            'max_features':['sqrt','log2', .1, .2, .3]
+        }
+        
+        rf_stats = self.test_classifier(rf, rf_params, name="rf", save = save_lc)
 
         self.check_record(rf_stats)
 
         
     def nearest_neighbors(self, name=None):
+
         knn = KNeighborsClassifier()
         knn_params = {
             "n_neighbors" : [5, 6]
@@ -316,15 +344,45 @@ class FeatureTester(object) :
         self.check_record(knn_stats)    
 
 
-    def oasis(self, aggress=.1, niter=10000, maxk=10, verbose=True):
-        model = Oasis(n_iter=niter, aggress = aggress, do_psd=False, psd_every=3,
-                      save_path = pjoin("/data/ml2/vishakh/temp/oasis", self.fname))
-        
-        model.fit(self.x_train, self.y_train, verbose = verbose)
-        
-        out = model.predict(self.x_test, self.x_train,  self.y_test, self.y_train, maxk=maxk)
+    def oasis(self, predict=True, snap_shot_path = None, save_path = None, aggress=.4, niter=10000, maxk=100, verbose=True, save_every = None):
 
-        return out                                                                              
+        if snap_shot_path is None:
+            print("Learning metric with oasis using agressivenes of {0} and {1} iterations").format(
+            aggress, niter)
+        
+        split = self.prepare_valid_set()
+        
+        X_train = split['x_train']
+        X_valid = split['x_valid']
+        X_test = self.x_test
+        
+        y_train = split['y_train']
+        y_valid = split['y_valid']
+        y_test = self.y_test
+
+        if save_path is None:
+            save_path = pjoin(self.outDir, "metric-learning", "snapshots", self.fname)
+        
+        if snap_shot_path is None:
+            model = Oasis(n_iter=niter, aggress = aggress, do_psd=False, psd_every=3,
+                           save_path = save_path, save_every=save_every)
+
+            model.fit(X_train, y_train, verbose = verbose)
+
+        else:
+            model = Oasis()
+            model.read_snapshot(snap_shot_path)
+            
+        n_features = X_train.shape[1]
+        W = model._weights
+        W.shape = (np.int(np.sqrt(W.shape[0])), np.int(np.sqrt(W.shape[0])))
+        
+        if predict:
+            out = self.knn_precomp(sim_weights=W, useSim=True)
+        else:
+            out = None
+        
+        return out, model.batch_loss                                                                              
 
     def LMNN(self):
         print "Warning, the features will be transformed"
@@ -334,7 +392,6 @@ class FeatureTester(object) :
         self.features = lmnn.transform(self.features)
         self.prepare_for_testing()
         self.nearest_neighbors("LMNN + KNN")
-
 
 
     def NCA(self):
@@ -354,7 +411,8 @@ class FeatureTester(object) :
     def get_result(self):
         return self.current_result
 
-    def knn_custom(self, maxk=200, cosineSim=False):
+    def knn_precomp(self, maxk=200, cosineSim=False, sim_weights = None, useSim = False):
+    
         #We want to use a validation set 
         split = self.prepare_valid_set()
         
@@ -377,19 +435,45 @@ class FeatureTester(object) :
         numqueriesMaj_valid = X_valid[y_test == 0].shape[0]
         numqueriesMaj_train = X_train[y_train == 0].shape[0]
 
-        if not cosineSim:
+        #Euclidean distance if not cosine
+        if not cosineSim and not useSim:
+            print("Using Euclidean distance")
             s_test =  euclidean_distances(X_test, X_train)
             s_valid = euclidean_distances(X_valid, X_train)
             s_train =  euclidean_distances(X_train, X_train)
-            
-        else:
+
+        #cosine distance if not euclidean
+        elif cosineSim:
+            print("Using Cosine useSim measure")
             s_test = cosine_similarity(X_test, X_train)
             s_valid = cosine_similarity(X_valid, X_train)
             s_train = cosine_similarity(X_train, X_train)
-        
-        ind_test = np.argsort(s_test, axis=1)
-        ind_valid = np.argsort(s_valid, axis=1)
-        ind_train = np.argsort(s_train, axis=1)
+
+        elif useSim:
+            print("Using a custom similarity score maybe for OASIS")
+            precomp = np.dot(sim_weights, X_train.T)
+            print "precomp done"
+            s_valid = np.dot(X_valid, precomp)
+            print "s_valid done"
+            s_test = np.dot(X_test, precomp)
+            print "s_test done"
+            s_train = np.dot(X_train, precomp)
+            print "s_train done"
+            
+            
+        if cosineSim or useSim:
+            print "Sorting backwards because its a similarity not distance"
+            #We are using a useSim score so argsort backwards
+            ind_test = np.argsort(s_test, axis=1)[:, ::-1]
+            ind_train = np.argsort(s_train, axis = 1)[:, :: -1]
+            ind_valid = np.argsort(s_valid, axis = 1)[:, :: -1]
+
+        else:
+            "Sorting regularly because its a distance not similarity"
+            #We are using a distance so sort regularly
+            ind_test = np.argsort(s_test, axis=1)
+            ind_valid = np.argsort(s_valid, axis=1)
+            ind_train = np.argsort(s_train, axis=1)
 
         # Voting based on nearest neighbours
         # make sure it is int
@@ -397,15 +481,18 @@ class FeatureTester(object) :
         # Newer version of ndarray.astype takes a copy keyword argument
         # With this, we won't have to check
 
+
+
         if y_train.dtype.kind != 'int':
             queryvotes_test = y_train[ind_test[:, :maxk]].astype('int')
             queryvotes_valid = y_train[ind_valid[:, :maxk]].astype('int')
             queryvotes_train = y_train[ind_train[:, :maxk]].astype('int')
 
         else:
-            queryvotes = y_train[ind_valid[:, :maxk]]
+            queryvotes_test = y_train[ind_test[:, :maxk]]
             queryvotes_valid = y_train[ind_valid[:, :maxk]]
             queryvotes_train = y_train[ind_train[:, :maxk]]
+
 
         errsum_valid = np.empty((maxk,))
         errsum_train = np.empty((maxk, ))
@@ -419,7 +506,10 @@ class FeatureTester(object) :
         phys_scores_valid = []
         phys_scores_train = []
 
+
         for kk in xrange(maxk):
+            print "Begining the voting"
+            print kk
             labels = np.empty((numqueries_valid,), dtype='int')
             labels_train = np.empty((numqueries_train, ), dtype='int')
             
@@ -462,17 +552,17 @@ class FeatureTester(object) :
             errrateMaj_train = errsumMaj_train / numqueriesMaj_train
 
         #try on test set
-        opt_k = np.argmin(aucs_valid)
+        opt_k = np.argmax(aucs_valid)
 
         labels = np.empty((numqueries_test,), dtype='int')
         labels_train = np.empty((numqueries_train))
 
         for i in xrange(numqueries_test):
-            b = np.bincount(queryvotes_test[i, :kk + 1])
+            b = np.bincount(queryvotes_test[i, :opt_k + 1])
             labels[i] = np.argmax(b)  # get winning class
 
         for i in xrange(numqueries_train):
-            b = np.bincount(queryvotes_train[i, :kk + 1])
+            b = np.bincount(queryvotes_train[i, :opt_k + 1])
             labels_train[i] = np.argmax(b)
 
         errors = labels != y_test
@@ -491,8 +581,17 @@ class FeatureTester(object) :
         errrate_test = errsum_test / numqueries_test
         errrateMaj_test  = errsumMaj_test / numqueriesMaj_test
 
-        train_out = {"Misclassification error": errrate_train, "Majority missclassification error": errrateMaj_train, "AUC":auc_train, "physionet_score":phys_scores_train} 
-        valid_out = {"Misclassification error": errrate_valid, "Majority missclassification error": errrateMaj_valid, "AUC":aucs_valid, "physionet_score":phys_scores_valid} 
+        train_out = {
+            "Misclassification error": errrate_train,
+            "Majority missclassification error": errrateMaj_train,
+            "AUC":auc_train, "physionet_score":phys_scores_train
+        }
+        
+        valid_out = {
+            "Misclassification error": errrate_valid,
+            "Majority missclassification error": errrateMaj_valid,
+            "AUC":aucs_valid, "physionet_score":phys_scores_valid
+        } 
 
 
         results = {
@@ -503,23 +602,9 @@ class FeatureTester(object) :
             "Missclassification error in test": 1-errrate_test,
             "Majority missclassification error in test": 1-errrateMaj_test,
             "Physionet_score in test": phys_score_test,
-            "Auc in test": auc_test
+            "AUC_test": auc_test
         }
         
         return results
                       
       
-    
-
-
-
-
-
-
-
-
-
-
-
-
-

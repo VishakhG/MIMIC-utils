@@ -43,7 +43,7 @@ def make_psd(W):
 
 
 def symmetrize(W):
-    """ Symmetrize matrix. """
+    """ Symmetrize matrix."""
     W[:] = 0.5 * (W + W.T)
 
 
@@ -62,7 +62,7 @@ class Oasis(BaseEstimator):
         self.sym_every = sym_every
         self.psd_every = psd_every
         self.save_path = save_path
-
+        self.batch_loss = []
         if save_every is None:
             self.save_every = int(np.ceil(self.n_iter / 10))
         else:
@@ -73,33 +73,47 @@ class Oasis(BaseEstimator):
                 os.makedirs(self.save_path)
 
     def _getstate(self):
-        return (self._weights, )
+        return self._weights
 
     def _setstate(self, state):
-        weights, = state
+        weights = state
         self._weights = weights
 
     def _save(self, n=None):
         """ Pickle the model."""
         fname = self.save_path + "/model%04d.pklz" % n
-        f = gzip.open(fname, 'wb')
-        state = self._getstate()
-        pickle.dump(state, f)
-        f.close()
+
+        try:
+            f = gzip.open(fname, 'wb')
+            state = self._getstate()
+            pickle.dump(state, f)
+            f.close()
+        except:
+            f.close()
+            print("Can't compress state with gzip, using alternative method")
+            state = self._getstate()
+            np.save(fname, state)
 
     def read_snapshot(self, fname):
         """ Read model state snapshot from gzipped pickle. """
-        f = gzip.open(fname, 'rb')
-        state = pickle.load(f)
-        self._setstate(state)
+        try:
+            f = gzip.open(fname, 'rb')
+            state = pickle.load(f)
+            self._setstate(state)
+            
+        except:
+            f.close()
+            state = np.load(fname)
+            self._setstate(state)
 
     def _fit_batch(self, W, X, y, class_start, class_sizes, n_iter,
                    verbose=False):
         """ Train batch inner loop. """
 
+        batch_loss = []
         loss_steps_batch = np.empty((n_iter,), dtype='bool')
         n_samples, n_features = X.shape
-
+        
         # assert(W.shape[0] == n_features)
         # assert(W.shape[1] == n_features)
 
@@ -132,6 +146,7 @@ class Oasis(BaseEstimator):
             samples_delta = X[pos_ind] - X[neg_ind]
 
             loss = 1 - np.dot(np.dot(p, W), samples_delta)
+            batch_loss.append(loss)
 
             if loss > 0:
                 # Update W
@@ -151,13 +166,13 @@ class Oasis(BaseEstimator):
                 # plt.imshow(W,interpolation='nearest')
                 # plt.draw()
 
-            # print "loss = %f" % loss
-
-        return W, loss_steps_batch
+            #print "loss = %f" % loss
+        
+        return W, loss_steps_batch, batch_loss
 
     def fit(self, X, y, overwrite_X=False, overwrite_y=False, verbose=False):
         """ Fit an OASIS model. """
-
+        
         if not overwrite_X:
             X = X.copy()
         if not overwrite_y:
@@ -197,7 +212,7 @@ class Oasis(BaseEstimator):
             class_sizes[ii] = np.sum(y == ii)
             # This finds the first occurrence of that class
             class_start[ii] = np.flatnonzero(y == ii)[0]
-
+        
         loss_steps = np.empty((self.n_iter,), dtype='bool')
         n_batches = int(np.ceil(self.n_iter / self.save_every))
         steps_vec = np.ones((n_batches,), dtype='int') * self.save_every
@@ -212,13 +227,16 @@ class Oasis(BaseEstimator):
                 print 'run batch %d/%d, for %d steps ("." = 100 steps)\n' \
                       % (bb + 1, n_batches, self.save_every)
 
-            W, loss_steps_batch = self._fit_batch(W, X, y,
+            W, loss_steps_batch, batch_loss = self._fit_batch(W, X, y,
                                                   class_start,
                                                   class_sizes,
                                                   steps_vec[bb],
                                                   verbose=verbose)
 
-            # print "loss_steps_batch = %d" % sum(loss_steps_batch)
+            #print "loss_steps_batch = %d" % sum(loss_steps_batch)
+            print("batch loss{0}").format(sum(batch_loss))
+            self.batch_loss.append(sum(batch_loss))
+            
             loss_steps[bb * self.save_every:min(
                 (bb + 1) * self.save_every, self.n_iter)] = loss_steps_batch
 
@@ -239,6 +257,10 @@ class Oasis(BaseEstimator):
 
         return self
 
+    def get_weights(self):
+        return self._weights.view()
+        
+    
     def predict(self, X_test, X_train, y_test, y_train, maxk=200):
         '''
         Evaluate an OASIS model by KNN classification
