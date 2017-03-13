@@ -103,6 +103,8 @@ class FeatureExtractor:
                 return True
 
     def within_period(self, start, end, period):
+        if period is None:
+            return True
         
         start = self.string_to_date(start)
         end = self.string_to_date(end)
