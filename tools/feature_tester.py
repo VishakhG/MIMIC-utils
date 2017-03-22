@@ -137,11 +137,14 @@ class FeatureTester(object) :
         print "feature dimension " + features.shape
         print "target dimension" + target.shape
 
-    def prepare_for_testing(self, tfidf=True, balance=True, sparse=True, cv_score_func=None, validation=False):
+    def prepare_for_testing(self, tfidf=True, balance=True, sparse=True,
+                            cv_score_func=None, validation=False):
         """ Get everything ready for testing, balance training set, create test train split and use  
             TFIDF if needed. """
+
         if cv_score_func is None:
             self.cv_score_func = 'roc_auc'
+
         else :
             self.cv_score_func= 'accuracy'
 
@@ -188,8 +191,7 @@ class FeatureTester(object) :
         self.x_test, self.y_test = x_test, y_test
         
         print("Data prepared for testing")
-
-
+        
         self.current_metadata = metadata
             
         print  metadata

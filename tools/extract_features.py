@@ -2,7 +2,6 @@ import cPickle as pickle
 import numpy as np
 import pandas as pd 
 import shelve
-from os.path import join as pjoin
 from MimicPatient import *
 from MimicEvent import *
 from Utils import *
@@ -15,44 +14,48 @@ import math
 import argparse
 import FindConcepts as fc
 from itertools import islice
+from os.path import join as pjoin
 
-class FeatureExtractor:
-    def __init__ (self, umlsCodeIndexPath, umlsStringIndexPath, umlsShelfPath,
-                  patientPath, timeWindow, outDir, nPatients, testing,
-                  featName, targName):
-
-        self.patientPath =  patientPath
+class FeatureExtractor(object):
+    def __init__(self, umlsCodeIndexPath, umlsStringIndexPath, umlsShelfPath,
+                  patientPath, timeWindow, outDir, p_start, p_end, testing,
+                  featName, targName, suffix):
+        self.suffix = suffix
         self.timeWindow = timeWindow
         self.outDir = outDir
-        self.patient_list = pickle.load(open('/data/ml2/MIMIC3/processed/patients_list.pk'))
-        self.patients = shelve.open('/data/ml2/MIMIC3/processed/patients.shlf')
+        self.patient_list = pickle.load(open(pjoin(patientPath, "patients_list.pk")))
+        self.patients = shelve.open(pjoin(patientPath, "patients.shlf"))
         self.feature_mat = defaultdict(list)
         self.umls_index =  pickle.load(open(umlsCodeIndexPath))
         self.umls_index = self.umls_index.mappings
         self.target_vector = []
-        self.currentTarget = 0
-
-        if nPatients == float('inf'):
-            self.nPatients = len(self.patient_list)
+        self.p_start = int(p_start)
+        
+        if p_end  == None:
+            self.p_end = len(self.patient_list)
         else:
-            self.nPatients = int(nPatients)
-
+            self.p_end = int(p_end)
+        
         self.testing = testing
+
         self.featName = featName
         self.targName = targName
+
         self.admissionIDs = []
         self.metadata = {}
+
         self.umls_str_idx = None
         self.umls_dict = shelve.open(umlsShelfPath)
-        self.trie = self.make_trie(umlsStringIndexPath)
+        
+        if not self.testing:
+            self.trie = self.make_trie(umlsStringIndexPath)
 
     def make_trie(self, path):
         umls_str_idx = pickle.load(open(path))
-        umls_str_idx = umls_str_idx.index
-
-        trie = fc.read_umls(umls_str_idx)
-        self.trie = trie
-        self.umls_str_idx = umls_str_idx
+        desc_idx = umls_str_idx.index
+        trie = fc.read_umls(desc_idx, self.umls_dict)
+        self.umls_str_idx = desc_idx
+        return trie
         
     def get_age_group(self, dob, admitTime):
         dob = self.string_to_date(dob)
@@ -113,6 +116,7 @@ class FeatureExtractor:
             if self.within_period(aTime, dString, 48):
                 return True
 
+    
     def within_period(self, start, end, period):
         if period is None:
             return True
@@ -127,6 +131,7 @@ class FeatureExtractor:
 
         return True if abs(delta.total_seconds() / 3600.0) <= period else False
 
+    
     def icd9_to_concept(self, code, name, translator, ins_pos = 0):
         concept = code
         #insert seperator dot if nessesary
@@ -147,22 +152,18 @@ class FeatureExtractor:
                     return concept
         return concept
 
+    
     def umls_to_name(self, translator, codes):
         res = []
-        if type(codes) == list:
-            for code in codes:
-                try:
-                    concept = translator[code]
-                    res.append(concept.names)
-    
-                except:
-                    continue
-        else:
+        if type(codes) != list:
+            codes = [codes]
+        for code in codes:
             try:
-                concept = translator[codes]
-                res.append(concept.names)
+                concept = translator[code]
+                res.append(concept.names[0])
+    
             except:
-                pass
+                continue
     
         return res
     
@@ -190,9 +191,15 @@ class FeatureExtractor:
             else:
                 self.feature_mat[feature] += ([0]* (max(map(len, self.feature_mat.values())) - 1)) + [1]
 
-    def add_to_provenance(self, concepts, tag):
+    
+    def add_to_metadata(self, concepts, tag):
         for concept in concepts:
-            self.metadata[concept] = [tag, self.umls_to_name(self.umls_dict, concept)]
+            if tag == 'NTE':
+                check_concept = concept[4:]
+            else:
+                check_concept = concept
+
+            self.metadata[concept] = [tag, self.umls_to_name(self.umls_dict, check_concept)]
         
     def extract_admission_features(self, admission):
 
@@ -203,7 +210,7 @@ class FeatureExtractor:
 
             if self.within_period(admission.in_time, psc.time, self.timeWindow):
                 self.append_features(concept)
-                self.add_to_provenance(concept, "PSC")
+                self.add_to_metadata(concept, "PSC")
 
                 
         for dgn in admission.dgn_events:
@@ -212,7 +219,7 @@ class FeatureExtractor:
 
             if self.within_period(admission.in_time, dgn.time, self.timeWindow):
                 self.append_features(concept)
-                self.add_to_provenance(concept, "DGN")
+                self.add_to_metadata(concept, "DGN")
 
         for pcd in admission.pcd_events:
             concept = self.icd9_to_concept(
@@ -221,21 +228,21 @@ class FeatureExtractor:
             
             if self.within_period(admission.in_time, dgn.time,  self.timeWindow):
                 self.append_features(concept)
-                self.add_to_provenance(concept, "PCD")
+                self.add_to_metadata(concept, "PCD")
 
-        for note in admission.nte_events:
-            if self.within_period(admission.in_time, note.time, self.timeWindow):
+        if not self.testing:
+            for note in admission.nte_events:
                 words = note.note_text.split()
                 concepts = fc.find_concepts(words, self.trie, self.umls_str_idx)
                 #flatten TODO:cleaner flatten function
-                concepts = [item for sublist in [concept[1] for concept in concepts]
-                            for item in sublist]
-                f = lambda x: "NTE" + x
-                concepts = map(f, concepts)
+                f = lambda x: "NTE_" + x
+                flatten = lambda l: [item for sublist in l for item in sublist]
+                concepts = flatten([concept[1] for concept in concepts])
+                concepts = list(set(map(f, concepts)))
                 self.append_features(concepts)
-                self.add_to_provenance(concepts, "NTE")
+                self.add_to_metadata(concepts, "NTE")
 
-            
+
     def extract_patient_features(self, patient):
         for admission_id in patient.admissions:
             if admission_id == "":
@@ -252,10 +259,12 @@ class FeatureExtractor:
 
             if admission.death_time != '':
                 survival_i = self.date_diff(in_time, self.string_to_date(admission.death_time))
+                mortality = 1
             else:
                 survival_i = None
+                mortality = 0
                 
-            self.target_vector.append([self.currentTarget, length_of_stay__i, survival_i])
+            self.target_vector.append([mortality, length_of_stay__i, survival_i])
            
             current_patient_age = self.get_age_group(patient.dob, admission.in_time)
             #TODO move the list logic
@@ -275,24 +284,27 @@ class FeatureExtractor:
     def create_feature_matrix(self):
         patient_keys = self.patient_list
 
+        
+        for i, patient_key in enumerate(patient_keys[self.p_start : self.p_end]):
+            print("Looking at patient {0} of {1}").format(str(i), str(self.p_end))
+            print("{0}% done").format((float(i) / self.p_end) * 100)
 
-        for i, patient_key in enumerate(patient_keys[1:self.nPatients]):
-            print "looking at patient" + str(i) + "of" + str(self.nPatients)
-            print str(float(i) / self.nPatients) + " of the way there"
             patient = self.patients[patient_key]
-            self.currentTarget = 0 if patient.expire_flag == 'N' else 1
+
+            #Go though the admissions for that patient
             self.extract_patient_features(patient)
+
 
         #Pandas csv tools seem way faster than other ways to do this
         features_out = pd.DataFrame.from_dict(self.feature_mat)
         targets_out = pd.DataFrame(self.target_vector)
         admission_ids = pd.DataFrame(self.admissionIDs)
 
-        
-        features_out.to_csv(self.outDir + self.featName + str(self.timeWindow)+ '.csv', index=False)
-        targets_out.to_csv(self.outDir + self.targName + str(self.timeWindow) + '.csv', index=False)
-        admission_ids.to_csv(self.outDir + "AdmissionIDs" + str(self.timeWindow) + '.csv', index=False)
-        pickle.dump(self.metadata, open(self.outDir + "metadata", 'wb'))
+        #save  TODO: save occasionally not just at the end
+        features_out.to_csv(self.outDir + self.featName + self.suffix +  '.csv', index=False)
+        targets_out.to_csv(self.outDir + self.targName + self.suffix + '.csv', index=False)
+        admission_ids.to_csv(self.outDir + "AdmissionIDs" + self.suffix + '.csv', index=False)
+        pickle.dump(self.metadata, open(self.outDir + "metadata" + self.suffix, 'wb'))
 
    
 def main():
@@ -328,7 +340,7 @@ def main():
     parser.add_argument(
         "-p", "--patientsDir",
         help="where the processed patient files are",
-        default='/data/ml2/MIMIC3/processed/patients_list.pk'
+        default='/data/ml2/MIMIC3/processed/'
     )
 
     parser.add_argument(
@@ -350,10 +362,22 @@ def main():
     )
     
     parser.add_argument(
-        "-n", "--nPatients",
-        help="how many patients to loop over",
-        default = float('inf')
+        "-start", "--patient_start",
+        help = "which patient to start with",
+        default = 0
     )
+
+    parser.add_argument(
+        "-end", "--patient_end",
+        help = "which patient to end with, if None, it will go to the end",
+        default = None
+    )
+    
+    parser.add_argument(
+        "-suff", "--suffix",
+        help = "something to tag onto file names",
+        default = ""
+)
 
     args = parser.parse_args()
     
@@ -361,10 +385,13 @@ def main():
         args.umls_code_index_dir, args.umls_string_index_dir,
         args.umls_shelf_dir, args.patientsDir,
         args.timeWindow, args.outDir,
-        args.nPatients, args.testing,
-        args.featName, args.targName)
+        args.patient_start, args.patient_end,
+        args.testing, args.featName, args.targName, args.suffix)
 
     extractor.create_feature_matrix()
+
+
+
 if __name__ == '__main__':
     main()
         

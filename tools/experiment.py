@@ -17,9 +17,10 @@ class Experiment(object):
         self.recording = False
         self.results_dir = None
         self.note = None
-        self.save_prefix = None
+        self.save_prefix = None            
 
     def begin_experiment(self, fName=None, baseDir = None, note = ""):
+        
 
         self.note = note
         
