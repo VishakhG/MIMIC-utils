@@ -61,7 +61,7 @@ WHERE pcd.ICD9_CODE = '9670' --Mechanical ventillation
       AND dgn.ICD9_CODE != '3048' --drug dependency
 
 
-limit 3000
+limit 
 
 ) mynewtable;
 

@@ -146,9 +146,10 @@ class Oasis(BaseEstimator):
             samples_delta = X[pos_ind] - X[neg_ind]
 
             loss = 1 - np.dot(np.dot(p, W), samples_delta)
-            batch_loss.append(loss)
+
 
             if loss > 0:
+                batch_loss.append(loss)
                 # Update W
                 grad_W = np.outer(p, samples_delta)
 

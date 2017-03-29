@@ -6,6 +6,10 @@ import gzip
 import datetime
 from os.path import join as pjoin 
 
+import os 
+from os.path import join as pjoin
+
+
 import numpy as np
 import pandas as pd
 
@@ -17,6 +21,7 @@ from metric_learn import NCA
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.metrics.pairwise  import euclidean_distances
 
+
 from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import confusion_matrix
 from sklearn.metrics import accuracy_score, roc_auc_score
@@ -25,9 +30,13 @@ from sklearn.model_selection import learning_curve
 from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfTransformer
 
+from load import loadDataset
+
 from oasis import Oasis
 
 from imblearn.over_sampling import RandomOverSampler
+
+from utils.misc import loadHDF5
 
 
 import scipy 
@@ -44,13 +53,15 @@ class FeatureTester(object) :
         self.y_train = None
         self.x_test = None
         self.y_test = None
+        self.y_valid = None
+        self.x_valid = None
         self.current_result = None
-        self.current_metadata = None
+        self.current_metadata = ""
         self.fname = fname
         self.cv_score_func = None
         self.verbose = verbose
         if outDir is None:
-            outDir = "/data/ml2/vishakh/patient-similarity/"
+            outDir = "/data/ml2/vishakh/saps/"
         self.outDir = outDir
         
     def load_from_array(self, feature_set, target_set):
@@ -59,6 +70,84 @@ class FeatureTester(object) :
         self.features = feature_set
         self.targets = target_set.ravel()
         print "loaded data"
+    
+
+
+    def load_from_hdf5_raw(self, dname = "mimic-cancer", cohort = False, nrows=None):
+
+        data_dict = loadDataset(dname);
+        print("Loaded dataset {0}".format(dname))
+        
+        self.x_train = data_dict['train_x']
+        self.x_test = data_dict['test_x']
+        self.x_valid = data_dict['valid_x']
+        
+
+        if cohort:
+            self.y_valid = data_dict['valid_c']
+            self.y_train = data_dict['train_c']
+            self.y_test = data_dict['test_c']
+
+        else:
+            self.y_valid = data_dict['valid_y']
+            self.y_train = data_dict['train_y']
+            self.y_test = data_dict['test_y']
+        
+
+        if nrows is not None:
+            print "Truncating rows"
+             
+            self.x_train = self.x_train[0:nrows]
+            self.x_test = self.x_test[0:nrows]
+            self.x_valid = self.x_valid[0:nrows]
+
+            self.y_valid = self.y_valid[0:nrows]
+            self.y_train = self.y_train[0:nrows]
+            self.y_test = self.y_test[0:nrows]
+                    
+       
+            
+        print("Set up train/valid/test split")
+        
+    def load_from_hdf5_latent(self, dname = "mimic-cancer", feat_name='mu', ssi=False, cohort=False, nrows=None):
+
+        
+        #Load the latent representatinon instead of the raw features
+        representations = loadHDF5('/data/ml2/vishakh/SHARED/representations.h5')
+
+        # we need the labels anyways and we still care which class
+        data_dict = loadDataset(dname);
+        if ssi:
+            feat_name = 'ssi-'+feat_name
+            
+        #only xs change 
+        self.x_train = representations['train-vae-' + feat_name]
+        self.x_test = representations['test-vae-' + feat_name]
+        self.x_valid = representations['valid-vae-' + feat_name]
+        
+        
+        if cohort:
+            self.y_valid = data_dict['valid_c']
+            self.y_train = data_dict['train_c']
+            self.y_test = data_dict['test_c']
+
+        else:
+            self.y_valid = data_dict['valid_y']
+            self.y_train = data_dict['train_y']
+            self.y_test = data_dict['test_y']
+        
+
+        if nrows is not None:
+            print "Truncating rows"
+             
+            self.x_train = self.x_train[0:nrows]
+            self.x_test = self.x_test[0:nrows]
+            self.x_valid = self.x_valid[0:nrows]
+
+            self.y_valid = self.y_valid[0:nrows]
+            self.y_train = self.y_train[0:nrows]
+            self.y_test = self.y_test[0:nrows]
+                    
         
     def load_from_csv(self, feature_path=None, target_path=None, nrows=None, ncols=None):
         """Load features and targests from csv files """
@@ -91,6 +180,7 @@ class FeatureTester(object) :
         print "feature dimension " + str(features.shape)
         print "target dimension " + str(targets.shape)
         
+
     def create_intermediate_datasets(self, featurePathBase, targetsPathBase):
         """Create intermediate datasets that make things faster """
         self.load_from_csv(featurePathBase + ".csv", targetsPathBase + ".csv")
@@ -126,6 +216,7 @@ class FeatureTester(object) :
         pd.DataFrame(features).to_csv(fBT_path + ".csv")
         pd.DataFrame(targets).to_csv(tBT_path + ".csv")
         
+
     def load_from_pk(self, feature_path, target_path):
         """Load data from pickle files """
         features = pickle.load(open(feature_path))
@@ -136,6 +227,8 @@ class FeatureTester(object) :
         
         print "feature dimension " + features.shape
         print "target dimension" + target.shape
+
+    
 
     def prepare_for_testing(self, tfidf=True, balance=True, sparse=True,
                             cv_score_func=None, validation=False):
@@ -220,14 +313,14 @@ class FeatureTester(object) :
         
     def test_classifier(self, classifier_i, params_i = None, name=None, save=False):
         """The general setup to test a classifier using grid search and k-fold CV for a sklearn classifier """
-
+        
         x_test = self.x_test
         y_test = self.y_test
-        x_train = self.x_train
+        x_train = self.x_train 
         y_train = self.y_train
 
         
-        clf = GridSearchCV(classifier_i, params_i, scoring=self.cv_score_func, cv=5)
+        clf = GridSearchCV(classifier_i, params_i, scoring=self.cv_score_func, cv=3, verbose=10, n_jobs=30)
         clf.fit(x_train, y_train)
 
         top_score = clf.best_score_
@@ -296,7 +389,7 @@ class FeatureTester(object) :
         self.check_record(result_out)
 
         if save:
-            fpath = pjoin(self.outDir, str(name) + str(clf.best_params_) + str(roc[1]))
+            fpath = pjoin(self.outDir, self.fname, str(name) + str(clf.best_params_) + str(roc[1]))
             print "Saving learning data to {0}".format(fpath)
             f = gzip.open(fpath, 'wb')
             #Some model information that could be useful.
@@ -310,7 +403,7 @@ class FeatureTester(object) :
 
 
     def logistic_regression(self, elided_search = False, save_lc=False):
-        lr = LogisticRegression()
+        lr = LogisticRegression(class_weight = 'balanced')
 
         if elided_search:
             lr_params = {'penalty':['l1','l2']}
@@ -321,11 +414,11 @@ class FeatureTester(object) :
         log_stats = self.test_classifier(lr, lr_params, name = str(lr)[0:18], save=save_lc)
         
     def random_forest(self, save_lc = False):
+        print("RANDOM FOREST")
         rf = RandomForestClassifier()
         rf_params = {
             'criterion':['gini', 'entropy'],
-            'n_estimators':[10**i for i in range(4)] + [2000, 3000, 4000],
-            'max_features':['sqrt','log2', .1, .2, .3]
+            'n_estimators':[10**i for i in range(3)] + [ 3000, 4000]
         }
         
         rf_stats = self.test_classifier(rf, rf_params, name="rf", save = save_lc)
@@ -334,6 +427,7 @@ class FeatureTester(object) :
 
         
     def nearest_neighbors(self, name=None):
+        print("NEAREST NEIGHBORS")
 
         knn = KNeighborsClassifier()
         knn_params = {
@@ -346,21 +440,42 @@ class FeatureTester(object) :
         self.check_record(knn_stats)    
 
 
-    def oasis(self, predict=True, snap_shot_path = None, save_path = None, aggress=.4, niter=10000, maxk=100, verbose=True, save_every = None):
+    def oasis(self, predict=True, snap_shot_path = None, save_path = None, aggress=.4, niter=10000, maxk=100, verbose=True, save_every = None, make_valid=False):
 
         if snap_shot_path is None:
             print("Learning metric with oasis using agressivenes of {0} and {1} iterations").format(
             aggress, niter)
         
-        split = self.prepare_valid_set()
+
+        if make_valid :
+            split = self.prepare_valid_set()
+            X_train = split['x_train']
+            X_valid = split['x_valid']
+            X_test = self.x_test
         
-        X_train = split['x_train']
-        X_valid = split['x_valid']
-        X_test = self.x_test
+            y_train = split['y_train']
+            y_valid = split['y_valid']
+            y_test = self.y_test
         
-        y_train = split['y_train']
-        y_valid = split['y_valid']
-        y_test = self.y_test
+        else:
+            X_test = self.x_test
+            y_test = self.y_test
+           
+            X_train = self.x_train
+            y_train = self.y_train
+            
+            X_valid = self.x_valid
+            y_valid = self.y_valid
+        
+        print X_train.shape
+        print y_train.shape
+        
+        # if its sparse 
+        if (type(X_train) is not np.ndarray):
+            print("turning into ndarray")
+            X_train = X_train.toarray()
+        
+        
 
         if save_path is None:
             save_path = pjoin(self.outDir, "metric-learning", "snapshots", self.fname)
@@ -413,19 +528,30 @@ class FeatureTester(object) :
     def get_result(self):
         return self.current_result
 
-    def knn_precomp(self, maxk=200, cosineSim=False, sim_weights = None, useSim = False):
-    
-        #We want to use a validation set 
-        split = self.prepare_valid_set()
+    def knn_precomp(self, maxk=200, cosineSim=False, sim_weights = None, useSim = False, make_valid=False):
         
-        X_train = split['x_train']
-        X_valid = split['x_valid']
-        X_test = self.x_test
+        if make_valid:
+            #We want to use a validation set 
+            split = self.prepare_valid_set()
         
-        y_train = split['y_train']
-        y_valid = split['y_valid']
-        y_test = self.y_test
-
+            X_train = split['x_train']
+            X_valid = split['x_valid']
+            X_test = self.x_test
+        
+            y_train = split['y_train']
+            y_valid = split['y_valid']
+            y_test = self.y_test
+        else:
+            X_train = self.x_train
+            X_valid = self.x_valid
+            X_test = self.x_test
+            
+            y_train = self.y_train
+            y_valid = self.y_valid
+            y_test = self.y_test
+            
+            print X_valid.shape
+            print y_valid.shape
         
         maxk = min(maxk, X_train.shape[0])  # K can't be > numcases in X_train
         
@@ -434,7 +560,7 @@ class FeatureTester(object) :
         numqueries_train = X_train.shape[0]
 
         numqueriesMaj_test = X_test[y_test == 0].shape[0]
-        numqueriesMaj_valid = X_valid[y_test == 0].shape[0]
+        numqueriesMaj_valid = X_valid[y_valid == 0].shape[0]
         numqueriesMaj_train = X_train[y_train == 0].shape[0]
 
         #Euclidean distance if not cosine
@@ -610,3 +736,32 @@ class FeatureTester(object) :
         return results
                       
       
+    def eval_oasis(self, snapshot_dir, save_dir, eval_fname, range=None):
+        out = []
+        eval_fname = "oasisEval.pk"
+        
+        file_list = sorted(os.listdir(snapshot_dir))
+
+        if range == -1:
+            file_list = file_list[-2:-1]
+            print file_list
+        if range is not None and range != -1 :
+            file_list = file_list[0:range]
+
+
+        for fname in file_list:
+            if not fname.startswith('.'):
+                cPath = pjoin(snapshot_dir, fname)
+                print("Loading from snapshot {0}".format(cPath))
+                info = self.oasis(snap_shot_path = cPath)
+                out.append(info)
+            else:
+                print("ignoring file {0}").format(fname)
+        
+        
+        f = gzip.open(pjoin(save_dir, eval_fname), 'wb')
+        print("saving at directory{0}".format(f))
+
+        pickle.dump(out, f)
+        f.close()
+

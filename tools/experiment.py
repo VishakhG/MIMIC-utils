@@ -5,7 +5,8 @@ import pandas as pd
 import numpy as np
 import cPickle as pickle
 from os import listdir
-from os.path import isfile, join
+from os.path import isfile, join as pjoin
+
 
 
 class Experiment(object):
@@ -19,24 +20,24 @@ class Experiment(object):
         self.note = None
         self.save_prefix = None            
 
-    def begin_experiment(self, fName=None, baseDir = None, note = ""):
+    def begin_experiment(self, fname=None, baseDir = None, note = ""):
         
 
         self.note = note
         
         if baseDir is  None:
-            baseDir = "/data/ml2/vishakh/temp/exp_results/"
+            baseDir = "/data/ml2/vishakh/sap/baselines/"
 
         now = datetime.datetime.now()
         now = str(now.replace(second=0, microsecond=0))
         now = now.replace(" ", "_")
         
-        if fName is None:
-            fName = now
+        if fname is None:
+            fname = now
         else:
-            fName = fName + now
+            fname = fname + now
         
-        self.results_dir = baseDir + fName
+        self.results_dir = pjoin(baseDir, fname)
 
         self.results = []
         self.recording = True
@@ -59,7 +60,8 @@ class Experiment(object):
                     'result  has no toString(), please define or pass string')
         metadata = metadata + "\nExperimentNote:\n" + self.note         
         self.results.append([metadata, result])
-
+        
+        self.save_experiment()
 
     def save_experiment(self, ftype="txt"):
         print "Saving Experiment"
