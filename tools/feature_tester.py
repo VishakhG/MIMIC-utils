@@ -29,6 +29,7 @@ from sklearn.model_selection import cross_val_score
 from sklearn.model_selection import learning_curve
 from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfTransformer
+from fnmatch import fnmatch 
 
 from load import loadDataset
 
@@ -37,6 +38,9 @@ from oasis import Oasis
 from imblearn.over_sampling import RandomOverSampler
 
 from utils.misc import loadHDF5
+
+
+
 
 
 import scipy 
@@ -320,7 +324,7 @@ class FeatureTester(object) :
         y_train = self.y_train
 
         
-        clf = GridSearchCV(classifier_i, params_i, scoring=self.cv_score_func, cv=3, verbose=10, n_jobs=30)
+        clf = GridSearchCV(classifier_i, params_i, scoring=self.cv_score_func, cv=3, verbose=10, n_jobs=10)
         clf.fit(x_train, y_train)
 
         top_score = clf.best_score_
@@ -528,12 +532,13 @@ class FeatureTester(object) :
     def get_result(self):
         return self.current_result
 
+   
     def knn_precomp(self, maxk=200, cosineSim=False, sim_weights = None, useSim = False, make_valid=False):
-        
+
         if make_valid:
             #We want to use a validation set 
             split = self.prepare_valid_set()
-        
+         
             X_train = split['x_train']
             X_valid = split['x_valid']
             X_test = self.x_test
@@ -541,6 +546,7 @@ class FeatureTester(object) :
             y_train = split['y_train']
             y_valid = split['y_valid']
             y_test = self.y_test
+
         else:
             X_train = self.x_train
             X_valid = self.x_valid
@@ -548,52 +554,48 @@ class FeatureTester(object) :
             
             y_train = self.y_train
             y_valid = self.y_valid
-            y_test = self.y_test
+            y_test =  self.y_test
             
-            print X_valid.shape
-            print y_valid.shape
-        
         maxk = min(maxk, X_train.shape[0])  # K can't be > numcases in X_train
         
         numqueries_valid = X_valid.shape[0]
         numqueries_test = X_test.shape[0]
-        numqueries_train = X_train.shape[0]
 
         numqueriesMaj_test = X_test[y_test == 0].shape[0]
         numqueriesMaj_valid = X_valid[y_valid == 0].shape[0]
-        numqueriesMaj_train = X_train[y_train == 0].shape[0]
-
+        
+        
         #Euclidean distance if not cosine
         if not cosineSim and not useSim:
             print("Using Euclidean distance")
             s_test =  euclidean_distances(X_test, X_train)
             s_valid = euclidean_distances(X_valid, X_train)
-            s_train =  euclidean_distances(X_train, X_train)
+
 
         #cosine distance if not euclidean
         elif cosineSim:
             print("Using Cosine useSim measure")
             s_test = cosine_similarity(X_test, X_train)
             s_valid = cosine_similarity(X_valid, X_train)
-            s_train = cosine_similarity(X_train, X_train)
 
         elif useSim:
-            print("Using a custom similarity score maybe for OASIS")
-            precomp = np.dot(sim_weights, X_train.T)
+            sim_weights = csr_matrix(sim_weights)
+            print("Using a custom similarity score")
+            precomp = sim_weights.dot(X_train.T)
             print "precomp done"
-            s_valid = np.dot(X_valid, precomp)
+            s_valid = csr_matrix(X_valid).dot(precomp)
             print "s_valid done"
-            s_test = np.dot(X_test, precomp)
+            s_test = csr_matrix(X_test).dot(precomp)
             print "s_test done"
-            s_train = np.dot(X_train, precomp)
-            print "s_train done"
-            
-            
+            #Faster slicing
+            s_test = s_test.toarray()
+            s_valid = s_valid.toarray()
+
+
         if cosineSim or useSim:
             print "Sorting backwards because its a similarity not distance"
             #We are using a useSim score so argsort backwards
             ind_test = np.argsort(s_test, axis=1)[:, ::-1]
-            ind_train = np.argsort(s_train, axis = 1)[:, :: -1]
             ind_valid = np.argsort(s_valid, axis = 1)[:, :: -1]
 
         else:
@@ -609,94 +611,78 @@ class FeatureTester(object) :
         # Newer version of ndarray.astype takes a copy keyword argument
         # With this, we won't have to check
 
-
-
         if y_train.dtype.kind != 'int':
             queryvotes_test = y_train[ind_test[:, :maxk]].astype('int')
             queryvotes_valid = y_train[ind_valid[:, :maxk]].astype('int')
-            queryvotes_train = y_train[ind_train[:, :maxk]].astype('int')
+
 
         else:
             queryvotes_test = y_train[ind_test[:, :maxk]]
             queryvotes_valid = y_train[ind_valid[:, :maxk]]
-            queryvotes_train = y_train[ind_train[:, :maxk]]
-
-
+        
         errsum_valid = np.empty((maxk,))
-        errsum_train = np.empty((maxk, ))
 
         errsumMaj_train = np.empty((maxk, ))
         errsumMaj_valid = np.empty((maxk, ))
-
+        precision_test = np.empty((maxk, ))
         aucs_valid = []
-        aucs_train = []
-
         phys_scores_valid = []
-        phys_scores_train = []
-
-
+        
+        print "Begining the voting"        
         for kk in xrange(maxk):
-            print "Begining the voting"
-            print kk
+            print("At k = {0}".format(kk))
             labels = np.empty((numqueries_valid,), dtype='int')
-            labels_train = np.empty((numqueries_train, ), dtype='int')
-            
+            #Calculate precision at k
+            precision_kk = 0
+
             for i in xrange(numqueries_valid):
                 b = np.bincount(queryvotes_valid[i, :kk + 1])
                 labels[i] = np.argmax(b)  # get winning class
-
-            for i in xrange(numqueries_train):
-                b = np.bincount(queryvotes_train[i, :kk + 1])
-                labels_train[i] = np.argmax(b)
                 
+            #Since we are looping through k anyways, might as well get precision at k
+            #K closest to test point 
+            for i in xrange(numqueries_test): 
+                test_votes = queryvotes_test[i, :kk+1]
+
+                if y_test[i] == 1:
+                    precision_kki = sum(test_votes[test_votes == 1]) / (kk + 1)
+                    print precision_kki
+                    precision_kk += precision_kki
+                
+            #Divide by all members of the class
+            precision_test[kk] = precision_kk / sum(y_test[y_test == 1])
+
             errors = labels != y_valid
-            errors_train = labels_train != y_train
-            
             errorsMaj = errors[y_valid == 0]
-            errorsMaj_train = errors_train[y_train == 0]
 
             phys_scores_valid.append(self.physionet_score(y_valid, labels))
-            phys_scores_train.append(self.physionet_score(y_train, labels_train))
 
             try:
                 auc = roc_auc_score(y_valid, labels)
-                auc_train = roc_auc_score(y_train, labels_train)
                 aucs_valid.append(auc)
-                aucs_valid.append(auc_train)
-
             except:
                 aucs.append(None)
+            
 
             errsum_valid[kk] = sum(errors)
-            errsum_train[kk] = sum(errors_train)
-            
             errsumMaj_valid[kk] = sum(errorsMaj)
-            errsumMaj_train[kk] = sum(errorsMaj_train)
-
             errrate_valid = errsum_valid / numqueries_valid
-            errrate_train = errsum_train / numqueries_train
-            
             errrateMaj_valid  = errsumMaj_valid / numqueriesMaj_valid
-            errrateMaj_train = errsumMaj_train / numqueriesMaj_train
-
+            
         #try on test set
         opt_k = np.argmax(aucs_valid)
 
         labels = np.empty((numqueries_test,), dtype='int')
-        labels_train = np.empty((numqueries_train))
+
 
         for i in xrange(numqueries_test):
             b = np.bincount(queryvotes_test[i, :opt_k + 1])
-            labels[i] = np.argmax(b)  # get winning class
-
-        for i in xrange(numqueries_train):
-            b = np.bincount(queryvotes_train[i, :opt_k + 1])
-            labels_train[i] = np.argmax(b)
-
+            labels[i] = np.argmax(b)  # get winning 
+        
         errors = labels != y_test
         errorsMaj = errors[y_test == 0]
         phys_score_test = self.physionet_score(y_test, labels)
-
+        
         try:
             auc_test = roc_auc_score(y_test, labels)
         except:
@@ -704,16 +690,8 @@ class FeatureTester(object) :
 
         errsum_test = sum(errors)
         errsumMaj_test = sum(errorsMaj)
-        
-
         errrate_test = errsum_test / numqueries_test
         errrateMaj_test  = errsumMaj_test / numqueriesMaj_test
-
-        train_out = {
-            "Misclassification error": errrate_train,
-            "Majority missclassification error": errrateMaj_train,
-            "AUC":auc_train, "physionet_score":phys_scores_train
-        }
         
         valid_out = {
             "Misclassification error": errrate_valid,
@@ -721,9 +699,8 @@ class FeatureTester(object) :
             "AUC":aucs_valid, "physionet_score":phys_scores_valid
         } 
 
-
         results = {
-            "train" : train_out,
+            "precision" : precision_test,
             "validation":valid_out,
             "physionet_score_test":phys_score_test,
             "Optimal K" : opt_k,
@@ -734,21 +711,22 @@ class FeatureTester(object) :
         }
         
         return results
-                      
-      
+  
+        
     def eval_oasis(self, snapshot_dir, save_dir, eval_fname, range=None):
         out = []
-        eval_fname = "oasisEval.pk"
-        
+
         file_list = sorted(os.listdir(snapshot_dir))
+        file_list = [ f  for f in file_list if fnmatch(f, "model*")]
 
         if range == -1:
             file_list = file_list[-2:-1]
             print file_list
+
         if range is not None and range != -1 :
             file_list = file_list[0:range]
-
-
+        
+        
         for fname in file_list:
             if not fname.startswith('.'):
                 cPath = pjoin(snapshot_dir, fname)
@@ -764,4 +742,6 @@ class FeatureTester(object) :
 
         pickle.dump(out, f)
         f.close()
+
+
 

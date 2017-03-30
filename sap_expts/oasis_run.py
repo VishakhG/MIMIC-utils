@@ -49,8 +49,6 @@ parser.add_argument(
 args = parser.parse_args()
 
      
-
-
 save_dir = args.savedir
 predict = False
 niter = int(args.niters)
@@ -59,6 +57,7 @@ ft = FeatureTester()
     
 if args.raw:
     ft.load_from_hdf5_raw(dname=args.dname, cohort=args.cohort)
+
 else:
     ft.load_from_hdf5_latent(dname=args.dname, cohort=args.cohort)
 

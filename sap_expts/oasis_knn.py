@@ -43,11 +43,22 @@ parser.add_argument(
      default = True
  )
 
+parser.add_argument(
+    "-fn", "--fname" ,
+    help="The name of the final pickle file ",
+    default = "oasis_eval.pk"
+
+)
 
 
 args = parser.parse_args()
 
-eval_fname = "oasisEvalLast.pk"
+if args.nsnapshots == 0:
+    nsnapshots = None
+else:
+    nsnapshots = args.nsnapshots
+    
+eval_fname = args.fname
 ft = FeatureTester()
 save_dir = args.savedir
 
@@ -56,4 +67,4 @@ if args.raw:
 else:
     ft.load_from_hdf5_latent(dname=args.dname, cohort=args.cohort)
         
-ft.eval_oasis(save_dir,save_dir, eval_fname,  args.nsnapshots)
+ft.eval_oasis(save_dir,save_dir, eval_fname,  nsnapshots)
